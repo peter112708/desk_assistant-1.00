@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:dio/dio.dart'; 
 import 'package:shared_preferences/shared_preferences.dart'; // 👈 引入存储库以同步设置项
+import 'dart:convert'; // 👈 记得确认一下你 music_page.dart 头部有没有引入这个标准库，没有的话补一行
 
 // =========================================================================
 // 🧠 第一部分：纯 Dart 打造的轻量级音频队列控制器（逻辑大脑）
@@ -72,6 +73,32 @@ class MusicController {
   
   void playSong(Map<String, String> song) async {
     if (song['url'] == null || song['url']!.isEmpty || _isDisposed) return;
+    // 🛡️ 工业级物理防爆安全盾牌：
+    final String path = song['url']!;
+    // 如果路径看起来是个本地文件绝对路径（Windows 的 C:\ 开头或非 http 开头）
+    if (!path.startsWith('http') && !path.startsWith('https')) {
+      final file = File(path);
+      if (!await file.exists()) {
+        debugPrint("🚨 播放中断！物理文件已被移动或删除，路径失效：$path");
+        
+        // 🧠 斩草除根：既然放不了，立刻在底层彻底从当前播放长廊里抹去它的痕迹
+        // 防止后续重绘时，索引和匹配再次对上导致诈尸
+        currentList.removeWhere((s) => s['title'] == song['title'] && s['artist'] == song['artist']);
+        
+        // 如果长廊被删空了，直接彻底停止播放器，防死循环
+        if (currentList.isEmpty) {
+          await _audioPlayer.stop();
+          isPlaying = false;
+          currentSong = null;
+          _currentSongController.add(null);
+          return;
+        }
+
+        // ⚡ 干净利落地顺延到真正健康的下一首
+        playNext();
+        return; 
+      }
+    }
 
     currentSong = song;
     isPlaying = true;
@@ -92,15 +119,35 @@ class MusicController {
       
       await _audioPlayer.stop(); 
       
-      // 🔬 兼容性加固：判断是网络流还是本地绝对路径
+      // 🔬 兼容性加固：判断是网络流还是本地绝对路径 (这里保持你原版的完美兼容，一个字不改)
       if (song['url']!.startsWith('http://') || song['url']!.startsWith('https://')) {
         await _audioPlayer.play(UrlSource(song['url']!)); 
       } else {
-        await _audioPlayer.play(DeviceFileSource(song['url']!)); // 🚀 本地绝对路径播放源
+        await _audioPlayer.play(DeviceFileSource(song['url']!)); 
       }
       
     } catch (e) {
-      debugPrint("🚨 底层播放报错: $e");
+      // =========================================================================
+      // ⚡ 核心定点加固：云端网络歌曲失效/下架/超时 404 时的安全熔断区
+      // =========================================================================
+      debugPrint("🚨 底层播放报错（可能是云端歌曲链接失效或网络断开）: $e");
+
+      // 🧠 斩草除根：如果是云端或者任何未知报错导致放不了，立刻在底层从当前播放长廊里抹去它
+      // 防止它卡在当前队列里，造成“点下一首由于报错再次触发catch”的死循环
+      currentList.removeWhere((s) => s['title'] == song['title'] && s['artist'] == song['artist']);
+
+      // 如果长廊被开除空了，直接彻底停止播放器，重置状态退出，防止死循环
+      if (currentList.isEmpty) {
+        await _audioPlayer.stop();
+        isPlaying = false;
+        currentSong = null;
+        _currentSongController.add(null);
+        return;
+      }
+
+      // 🚀 干净利落：网络不行放不了这首，立马自动秒切到队列里的下一首健康歌曲！
+      playNext();
+
     } finally {
       if (!_isDisposed) {
         _loadingController.add(false);
@@ -196,6 +243,30 @@ class MusicPage extends StatefulWidget {
 }
 
 class _MusicPageState extends State<MusicPage> with AutomaticKeepAliveClientMixin {
+
+  //存本地歌单
+  // 💾 将爱心歌单同步持久化到本地硬盘
+  // 💾 将爱心歌单同步持久化到本地硬盘（标准安全版）
+  Future<void> _saveFavoriteSongs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final favList = _playlistsData['本地爱心歌单'] ?? [];
+      
+      // 使用标准 jsonEncode 封装，确保任何特殊字符（如歌名带英文双引号）都不会引起字符串破裂
+      List<String> jsonStrings = favList.map((song) {
+        return jsonEncode({
+          'title': song['title'] ?? '未知歌名',
+          'artist': song['artist'] ?? '未知歌手',
+          'url': song['url'] ?? '',
+        });
+      }).toList();
+      
+      await prefs.setStringList('saved_favorite_songs', jsonStrings);
+      debugPrint("❤️ 爱心歌单已安全落盘");
+    } catch (e) {
+      debugPrint("🚨 储存爱心歌单失败: $e");
+    }
+  }
   
   @override
   bool get wantKeepAlive => true;
@@ -216,7 +287,8 @@ class _MusicPageState extends State<MusicPage> with AutomaticKeepAliveClientMixi
     "Re S0 S0 Do Si La S0 La Si Si Si Si La Si La S0",
     "吹着前奏望着天空 我想起花瓣试着掉落",
     "为你翘课那天 花落的那天 教室的那一间 我怎么看不见",
-    "消失的下雨天 我好想再淋一遍"
+    //"消失的下雨天 我好想再淋一遍"
+    "作者太懒了（歌词实在不好调）"
   ];
   int _lyricIndex = 0;
   Timer? _lyricTimer;
@@ -289,6 +361,7 @@ class _MusicPageState extends State<MusicPage> with AutomaticKeepAliveClientMixi
 
     _startPythonServer(); 
     _loadAndScanLocalMusic(); // 🚀 启动时自动从存储中加载并扫描本地音源
+    _loadFavoriteSongs();
   }
 
   // 📂 读取本地设置路径并异步抓取 MP3 文件
@@ -340,7 +413,58 @@ class _MusicPageState extends State<MusicPage> with AutomaticKeepAliveClientMixi
       debugPrint("🚨 扫描本地音乐文件夹出现异常: $e");
     }
   }
+// 📥 从本地硬盘恢复爱心歌单
+  // 📥 从本地硬盘恢复爱心歌单（带动态物理路径对齐）
+  Future<void> _loadFavoriteSongs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      List<String>? jsonStrings = prefs.getStringList('saved_favorite_songs');
+      
+      if (jsonStrings != null && jsonStrings.isNotEmpty) {
+        List<Map<String, String>> savedFavs = [];
+        
+        for (var str in jsonStrings) {
+          try {
+            // 使用 Flutter 标准的 jsonDecode，防格式错乱
+            final Map<String, dynamic> songMap = jsonDecode(str);
+            final String title = songMap['title'] ?? '';
+            final String artist = songMap['artist'] ?? '';
+            String url = songMap['url'] ?? ''; // 拿到当初存的旧路径
 
+            // 🧠 核心大招：拿着歌名和歌手，去当前实时的本地磁盘扫描结果（_allLocalSongs）里捞取最新状态
+            // 这样不管用户是换了扫描文件夹，还是挪动了歌曲，只要歌名对得上，瞬间获取新路径！
+            final matchedLocalSong = _allLocalSongs.firstWhere(
+              (local) => local['title'] == title && local['artist'] == artist,
+              orElse: () => {},
+            );
+
+            if (matchedLocalSong.isNotEmpty) {
+              // 如果在本地找到了，强行覆盖为最新的物理磁盘路径！
+              url = matchedLocalSong['url'] ?? url;
+            } else {
+              // 🛡️ 如果这是一首在网络上搜索到并收藏的在线歌，本地当然没有
+              // 那它就不会匹配到本地路径，而是继续保留原有的网络 URL，完美兼容网络/本地音源！
+            }
+
+            savedFavs.add({
+              'title': title,
+              'artist': artist,
+              'url': url,
+            });
+          } catch (e) {
+            debugPrint("🚨 解析单首爱心歌曲失败: $e");
+          }
+        }
+        
+        setState(() {
+          _playlistsData['本地爱心歌单'] = savedFavs;
+        });
+        debugPrint("❤️ 成功恢复爱心歌单，并完成动态路径修正：${savedFavs.length} 首");
+      }
+    } catch (e) {
+      debugPrint("🚨 恢复爱心歌单出现全局异常: $e");
+    }
+  }
   void _startPythonServer() async {
     try {
       ServerSocket socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
@@ -947,22 +1071,33 @@ class _MusicPageState extends State<MusicPage> with AutomaticKeepAliveClientMixi
                     size: 18
                   ),
                   onPressed: () {
-                    setState(() {
-                      if (isFavorite) {
-                        // 💔 如果已经收藏了，点击就是精准“取消收藏”（从爱心歌单里消灭它）
-                        _playlistsData['本地爱心歌单']?.removeWhere((element) => 
-                            element['title'] == song['title'] && element['artist'] == song['artist']
-                        );
-                      } else {
-                        // ❤️ 如果没收藏，点击就给它加进爱心歌单（深拷贝一份，防止指针污染）
-                        _playlistsData['本地爱心歌单']?.add({
-                          'title': song['title'] ?? '未知歌名',
-                          'artist': song['artist'] ?? '未知歌手',
-                          'url': song['url'] ?? '',
-                        });
-                      }
-                    });
-                  },
+  setState(() {
+    if (isFavorite) {
+      // 💔 1. 取消收藏：精准在内存数据池中将这首歌开除
+      _playlistsData['本地爱心歌单']?.removeWhere((element) => 
+          element['title'] == song['title'] && element['artist'] == song['artist']
+      );
+      debugPrint("💔 已取消收藏: ${song['title']}");
+    } else {
+      // ❤️ 2. 加入收藏：精准塞入内存数据池
+      _playlistsData['本地爱心歌单']?.add({
+        'title': song['title'] ?? '未知歌名',
+        'artist': song['artist'] ?? '未知歌手',
+        'url': song['url'] ?? '',
+      });
+      debugPrint("❤️ 已加入收藏: ${song['title']}");
+    }
+  });
+
+  // 💾 3. 核心大招：不管是加收藏还是减收藏，只要状态一变，立刻强行重写硬盘，完成本地物理修改！
+  _saveFavoriteSongs(); 
+  
+  // 🔄 4. 联动大招：如果用户此时正好肉眼看着“本地爱心歌单”界面，
+  // 我们手动通知整个外部主页面也一起 setState 重绘一把，让这首歌在爱心列表中瞬间消失/出现
+  if (mounted) {
+    setState(() {});
+  }
+},
                 ),
               ),
               Tooltip(
