@@ -4,6 +4,9 @@ import 'package:window_manager/window_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart'; // 👈 引入本地存储库
 import 'pages/ai_page.dart'; // 👈 引入刚刚创建的 AI 页面组件
 import 'pages/music_page.dart'; // 👈 别忘了加这行
+import 'pages/sticky_notes_page.dart'; // 👈 便签页面（书签式侧边标签）
+import 'pages/notes_page.dart'; // 👈 笔记页面（网格卡片式）
+import 'package:tray_manager/tray_manager.dart';
 import 'package:file_picker/file_picker.dart';
 
 class HomePage extends StatefulWidget {
@@ -13,7 +16,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with TrayListener{
   int _selectedIndex = 0;
   final PageController _pageController = PageController();
   
@@ -43,8 +46,8 @@ class _HomePageState extends State<HomePage> {
   // 🌟 完完全全、六位一体的动态页面列表
   List<Widget> get _pages => [
     const Center(child: Text('时钟功能开发中...', style: TextStyle(fontSize: 24, color: Colors.white))),
-    const Center(child: Text('便签功能开发中...', style: TextStyle(fontSize: 24, color: Colors.white))),
-    const Center(child: Text('笔记功能开发中...', style: TextStyle(fontSize: 24, color: Colors.white))),
+    StickyNotesPage(themeColor: _themeColor), // 👈 便签页面正式入住！
+    NotesPage(themeColor: _themeColor), // 👈 笔记页面正式入住！
     // 🌟 音乐页面正式入住！
   MusicPage(themeColor: _themeColor),
     AiPage(themeColor: _themeColor), // 👈 AI 页面归位，对应第 5 个标签
@@ -62,6 +65,11 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    //windowManager.addListener(this); // 👈 注册窗口监听
+    // 👈 核心修正 2：直接用最土但最稳的匿名类注册托盘。把所有托盘逻辑完全锁在 initState 内部！
+    // 这样和类级别的函数没有任何重名冲突，更不会影响你的现有代码。
+    //trayManager.addListener(_MyTrayListener());
+    trayManager.addListener(this); // 仅新增这一行
     _startClock();
     _loadSettings(); // 👈 启动程序时，自动从硬盘读取之前保存的设置
   }
@@ -144,28 +152,47 @@ class _HomePageState extends State<HomePage> {
     const weekdays = ['星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日'];
     return weekdays[weekday - 1];
   }
+  
+
+  
 
   @override
   void dispose() {
+    //windowManager.removeListener(this); // 👈 注销监听
+    //trayManager.removeListener(this);   // 👈 注销监听
+    trayManager.removeListener(this); // 仅新增这一行
     _timeTimer?.cancel();
     _pageController.dispose();
     _apiKeyController.dispose();
+    _musicFolderController.dispose();
     super.dispose();
   }
+  // ================= ⚓ 窗口事件拦截 =================
+  // 只保留右键弹出菜单，无任何多余功能
+@override
+Future<void> onTrayIconRightMouseDown() async {
+  await trayManager.popUpContextMenu();
+}
+  
+ 
+
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.transparent, // 👈 确保 Scaffold 本身不遮挡透明度
       body: ClipRRect(
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          color: const Color(0xFF1E1E2E),
+          // 👈 核心修改：将原本全黑的 0xFF1E1E2E 改为半透明，让桌面磨砂透过来
+          color: const Color(0xFF1E1E2E).withValues(alpha: 0.45), 
           child: Row(
             children: [
               // ================= 左侧标签导航栏 =================
               Container(
                 width: 200,
-                color: const Color(0xFF181825),
+                // 👈 核心修改：左侧导航栏也改为半透明
+                color: const Color(0xFF181825).withValues(alpha: 0.5),
                 child: Column(
                   children: [
                     GestureDetector(
@@ -177,7 +204,7 @@ class _HomePageState extends State<HomePage> {
                         alignment: Alignment.centerLeft,
                         child: Row(
                           children: [
-                            Icon(Icons.bolt, color: _themeColor, size: 26), // 👈 这里的图标随主题色变
+                            Icon(Icons.bolt, color: _themeColor, size: 26), 
                             const SizedBox(width: 8),
                             const Text(
                               "粑粑科技",
@@ -191,45 +218,41 @@ class _HomePageState extends State<HomePage> {
                     const SizedBox(height: 10),
                     
                     // 核心功能列表
-                    const SizedBox(height: 10),
-      
-      // 🌟 核心改动：用 Column 替代 ListView.builder，彻底消灭滑动条和隐藏问题！
-      Column(
-        children: List.generate(_labels.length, (index) {
-          final isSelected = _selectedIndex == index;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-            child: ListTile(
-              selected: isSelected,
-              selectedTileColor: _themeColor.withValues(alpha: 0.15),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              leading: Icon(
-                _labels[index]['icon'],
-                color: isSelected ? _themeColor : Colors.white60,
-              ),
-              title: Text(
-                _labels[index]['title'],
-                style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.white70,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-              onTap: () {
-                setState(() => _selectedIndex = index);
-                _pageController.animateToPage(index, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
-              },
-            ),
-          );
-        }),
-      ),
+                    Column(
+                      children: List.generate(_labels.length, (index) {
+                        final isSelected = _selectedIndex == index;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                          child: ListTile(
+                            selected: isSelected,
+                            selectedTileColor: _themeColor.withValues(alpha: 0.15),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            leading: Icon(
+                              _labels[index]['icon'],
+                              color: isSelected ? _themeColor : Colors.white60,
+                            ),
+                            title: Text(
+                              _labels[index]['title'],
+                              style: TextStyle(
+                                color: isSelected ? Colors.white : Colors.white70,
+                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                              ),
+                            ),
+                            onTap: () {
+                              setState(() => _selectedIndex = index);
+                              _pageController.animateToPage(index, duration: const Duration(milliseconds: 300), curve: Curves.easeInOut);
+                            },
+                          ),
+                        );
+                      }),
+                    ),
 
-                    // ⚙️ 核心改动：利用 Spacer 把设置按钮死死压在左下角常驻！
                     const Spacer(),
                     const Divider(color: Colors.white12, height: 1),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                       child: ListTile(
-                        selected: _selectedIndex == 5, // 第 6 个页面也就是索引 5 代表设置页
+                        selected: _selectedIndex == 5, 
                         selectedTileColor: _themeColor.withValues(alpha: 0.15),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         leading: Icon(
@@ -264,16 +287,39 @@ class _HomePageState extends State<HomePage> {
                             behavior: HitTestBehavior.translucent,
                             onPanStart: (details) => windowManager.startDragging(),
                             child: Container(
-                              height: 50,
+                              height: 60, // 略微加高，留出完美的玻璃框边距
                               padding: const EdgeInsets.only(left: 20),
                               alignment: Alignment.centerLeft,
                               child: Row(
                                 children: [
-                                  const Icon(Icons.calendar_today_rounded, size: 14, color: Colors.white38),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    _currentTimeString,
-                                    style: const TextStyle(color: Colors.white70, fontSize: 13, fontFamily: 'monospace'),
+                                  // 👈 核心重构：时间显示区域变成绝对精致的磨砂卡片
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      // 关键点：半透明亮色底 + 极细的高光白边，在毛玻璃上质感拉满
+                                      color: Colors.white.withValues(alpha: 0.05),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: Colors.white.withValues(alpha: 0.08),
+                                        width: 1,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.calendar_today_rounded, size: 13, color: Colors.white60),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          _currentTimeString,
+                                          style: const TextStyle(
+                                            color: Colors.white, // 让文字更白更清晰
+                                            fontSize: 13, 
+                                            fontFamily: 'monospace',
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),
@@ -288,7 +334,8 @@ class _HomePageState extends State<HomePage> {
                       child: Container(
                         margin: const EdgeInsets.only(left: 0, right: 16, bottom: 16),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF252538),
+                          // 右侧卡片内容区保持原有的一点点内敛色，避免和背景混在一起
+                          color: const Color(0xFF252538).withValues(alpha: 0.85),
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: PageView(
@@ -463,11 +510,19 @@ Row(
           IconButton(
             icon: const Icon(Icons.close, color: Colors.white60, size: 18),
             hoverColor: Colors.redAccent.withValues(alpha: 0.8),
-            onPressed: () => windowManager.close(),
+            //onPressed: () => windowManager.close(),
+            onPressed: () async {
+        // 点自定义关闭按钮：隐藏窗口 + 隐藏任务栏，程序留在托盘
+           await windowManager.hide();
+           await windowManager.setSkipTaskbar(true);
+           },
           ),
           const SizedBox(width: 8),
         ],
       ),
     );
   }
+  
 }
+
+
